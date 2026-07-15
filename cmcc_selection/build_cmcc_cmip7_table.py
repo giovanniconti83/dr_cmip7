@@ -43,6 +43,20 @@ from collections import defaultdict
 # CMCC priorities we keep (per-opportunity priority from the internal file).
 KEEP_PRIORITIES = {"high", "medium"}
 
+# Group names in the CMCC file (authored ~v1.2.2.2) that are shorthand / were
+# renamed and do not exist verbatim in the queried DR version. Map each to the
+# actual DR group name(s) that reproduce its intended content.
+#   - omip_geometry_physics  : OMIP was split in v1.2.2.4; geometry+physics
+#     scalars now live in omip_scalars_high_priority. (Widen here to add
+#     omip_vectors_high_priority / omip_parameterizations if desired.)
+#   - hydro_modelling_PET_daily : redundant PET shorthand; its content is
+#     already covered by WaterResourcesPET_daily (also requested in the same
+#     opportunity), so this adds 0 net variables after de-dup.
+ALIASES = {
+    "omip_geometry_physics": ["omip_scalars_high_priority"],
+    "hydro_modelling_PET_daily": ["WaterResourcesPET_daily"],
+}
+
 
 # --------------------------------------------------------------------------- #
 # Step 1 - parse the internal CMCC selection CSV                              #
@@ -167,6 +181,7 @@ def build(selection, meta_by_uid, groups):
     import difflib
 
     dr_names = [v[0] for v in groups.values()]
+    aliases_norm = {_norm(k): v for k, v in ALIASES.items()}
     crosscheck = []           # per requested group
     var_rows = {}             # unique_name -> record
 
@@ -174,10 +189,20 @@ def build(selection, meta_by_uid, groups):
         opp, prio = entry["opportunity"], entry["priority"]
         for gid, note in entry["groups"]:
             key = _norm(gid)
-            status, matched_name, suggestion, gobj = "", "", "", None
+            status, suggestion = "", ""
+            targets = []                       # list of (real_name, group_obj)
             if key in groups:
-                matched_name, gobj = groups[key]
                 status = "matched"
+                targets = [groups[key]]
+            elif key in aliases_norm:
+                status = "aliased"
+                for real in aliases_norm[key]:
+                    rk = _norm(real)
+                    if rk in groups:
+                        targets.append(groups[rk])
+                    else:
+                        status = "alias-broken"
+                        suggestion = f"alias -> '{real}' not in DR"
             else:
                 close = difflib.get_close_matches(gid, dr_names, n=1, cutoff=0.8)
                 if close:
@@ -188,7 +213,7 @@ def build(selection, meta_by_uid, groups):
                     status = "ignored(note?)"
 
             n_vars = 0
-            if gobj is not None:
+            for matched_name, gobj in targets:
                 for var in gobj.get_variables():
                     uid = getattr(var, "uid", None)
                     meta = meta_by_uid.get(uid)
@@ -225,9 +250,9 @@ def build(selection, meta_by_uid, groups):
                 "cmcc_priority": prio,
                 "group_requested": gid,
                 "status": status,
-                "matched_group": matched_name,
+                "matched_group": ";".join(n for n, _ in targets),
                 "suggestion": suggestion,
-                "tier": tier_of(matched_name or gid),
+                "tier": tier_of(";".join(n for n, _ in targets) or gid),
                 "n_variables": n_vars,
                 "note": note,
             })
@@ -293,6 +318,8 @@ def main():
     ap.add_argument("--outdir", default=os.path.join(here, "out"))
     ap.add_argument("--parse-only", action="store_true",
                     help="only parse the CMCC CSV and print the selection (no API needed)")
+    ap.add_argument("--allow-unmatched", action="store_true",
+                    help="do not exit non-zero when some groups stay unresolved")
     args = ap.parse_args()
 
     selection = parse_cmcc_csv(args.csv)
@@ -313,12 +340,21 @@ def main():
     crosscheck, var_rows = build(selection, meta_by_uid, groups)
 
     matched = sum(1 for c in crosscheck if c["status"] == "matched")
-    problems = [c for c in crosscheck if c["status"] in ("typo?", "unmatched")]
-    print(f"[check] {matched} groups matched, {len(problems)} need attention:")
-    for c in problems:
-        extra = f" -> did you mean '{c['suggestion']}'?" if c["suggestion"] else ""
+    aliased = [c for c in crosscheck if c["status"] == "aliased"]
+    fatal = [c for c in crosscheck if c["status"] in ("typo?", "unmatched", "alias-broken")]
+    print(f"[check] {matched} matched, {len(aliased)} aliased, {len(fatal)} unresolved")
+    for c in aliased:
+        print(f"        [alias] {c['group_requested']} -> {c['matched_group']}"
+              f"  (+{c['n_variables']} vars)")
+    for c in fatal:
+        extra = f" -> {c['suggestion']}" if c["suggestion"] else ""
         print(f"        [{c['status']}] {c['group_requested']}"
               f"  ({c['opportunity']}){extra}")
+    if fatal and not args.allow_unmatched:
+        print("\n[abort] unresolved groups above would be silently dropped. "
+              "Add them to ALIASES (or rerun with --allow-unmatched).",
+              file=sys.stderr)
+        sys.exit(1)
 
     cc, var, realm_dir = write_outputs(crosscheck, var_rows, args.outdir)
     print(f"[write] {len(var_rows)} unique variables")
