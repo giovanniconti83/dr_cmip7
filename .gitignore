@@ -1,0 +1,5 @@
+# external repo cloned alongside for its lookup tables (clone separately per machine)
+cmip_reformatter/
+
+__pycache__/
+*.pyc
