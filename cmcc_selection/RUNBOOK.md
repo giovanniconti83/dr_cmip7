@@ -37,22 +37,28 @@ group name in the internal file that did not match the DR (rename, typo, or a
 free-text note that leaked through the comma split, e.g. the `not…` fragment in
 "Ocean Extremes"). Fix the internal file or accept, then re-run.
 
-## Step 3 — data-volume estimate (separate, CMIP6 ref ≈ 100 GB / model-year)
-The DR ships a volume estimator. Export the selected opportunities, edit the grid
-sizes to CMCC's model, then estimate:
+## Step 3 — map to model raw names (cmip_reformatter)
+`cmcc_variables.csv` / `by_realm/*.csv` carry **CMOR** `out_name`s. Map them to
+raw model names (RELHUM/PS/T…) with the cmip_reformatter lookup tables. Clone
+that repo alongside (it is gitignored here):
 ```bash
-# opportunity-level export (ids from the crosscheck / airtable), then:
-export_dreq_lists_json v1.2.2.2 cmcc_request.json -i <opp_ids> -p medium
-estimate_dreq_volume v1.2.2.2            # writes size.yaml first run
-#   edit size.yaml -> CMCC grid (nlon/nlat/nlev/...)
-estimate_dreq_volume cmcc_request.json -o out/volume_estimate.json
+git clone https://github.com/CMCC-Foundation/cmip_reformatter.git   # in dr_cmip7/
+cd cmcc_selection && python map_to_raw_names.py 2>/dev/null
 ```
-`-p medium` keeps Core+High+Medium DR-priority variables (drops DR "Low").
+Outputs under `out/raw/`: `by_realm/*.csv` (raw names), `mapping_detail.csv`
+(audit; `*` on lookup = realm mismatch), and **`unmapped.csv`** — selected vars
+with no raw-model equivalent = production gap to triage (drop, or extend the
+reformatter lookups).
 
-## Step 4 — map to model raw names (cmip_reformatter)
-`cmcc_variables.csv` / `by_realm/*.csv` carry **CMOR** `out_name`s. The final
-"RELHUM, PS, T" raw-model form needs the CMOR→raw mapping from `cmip_reformatter`
-(not in this repo — point the script at that mapping table when available).
+## Step 4 — data-volume estimate (CMIP6 ref ≈ 100 GB / model-year)
+Reuses the DR size math but with a PER-REALM grid (atmos vs ocean) and totals
+over our exact selection. Grids are set in the script (HGRID/VLEV; default
+CMCC-ESM2: CAM5.3 288×192 L30, NEMO ORCA1 362×292 L50 — edit for other configs):
+```bash
+python estimate_volume.py --version v1.2.2.4 2>/dev/null
+```
+Prints GB/model-year totals + per-realm + per-frequency, split request (all 853)
+vs producible (mapped 497); writes `out/volume_by_variable.csv`.
 
 ## Tuning knobs
 - `KEEP_PRIORITIES` in the script — currently `{high, medium}` (CMCC per-opportunity priority).
