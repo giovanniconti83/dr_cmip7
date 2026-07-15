@@ -128,7 +128,8 @@ def load_dr(version):
 
     groups = {}
     for g in DR.get_variable_groups():
-        nm = getattr(g, "name", None) or str(g)
+        nm = getattr(g, "name", None)
+        nm = str(nm) if nm is not None else str(g)   # .name can be a ConstantValueObj
         groups[_norm(nm)] = (nm, g)
     return DR, meta_by_uid, groups
 
@@ -141,7 +142,7 @@ def _norm(s):
 # Step 3/4 - cross-check + expand + tier + dedup                              #
 # --------------------------------------------------------------------------- #
 def tier_of(group_name):
-    m = re.search(r"tier[_ ]?([0-9])", group_name, re.I)
+    m = re.search(r"tier[_ ]?([0-9])", str(group_name), re.I)
     return f"tier{m.group(1)}" if m else ""
 
 
