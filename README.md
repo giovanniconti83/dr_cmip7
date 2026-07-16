@@ -14,12 +14,14 @@ details and tuning knobs.
 |------|------------|
 | `CMCC_CMIP7-DR-opportunities-Final*` | the internal CMCC selection (source of truth): opportunities, CMCC priority, variable groups |
 | `cmcc_selection/` | our scripts + outputs |
-| `CMIP7_DReq_Software/` | upstream CMIP7 Data Request API (clone) |
+| `CMIP7_DReq_Software_v1.4/` | upstream CMIP7 Data Request API (clone) |
 | `cmip_reformatter/` | CMOR→raw-name lookup tables (clone; gitignored) |
 
 ## Setup (once, on the server)
 
 ```bash
+./downl_CMIP7_DReq.sh                    # clone CMIP7_DReq_Software repository
+conda env create -n my_dreq_env --file CMIP7_DReq_Software_v1.4/env.yml
 conda activate my_dreq_env               # env with the DR API installed
 pip install CMIP7-data-request-api       # if not already present
 # CMOR -> raw-name lookup tables:
