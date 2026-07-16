@@ -19,8 +19,9 @@ details and tuning knobs.
 
 ## Setup (once, on the server)
 
+Run the following
 ```bash
-./downl_CMIP7_DReq.sh                    # clone CMIP7_DReq_Software repository
+./downl_CMIP7_DReq.sh                    # script for cloning CMIP7_DReq_Software repository
 conda env create -n my_dreq_env --file CMIP7_DReq_Software_v1.4/env.yml
 conda activate my_dreq_env               # env with the DR API installed
 pip install CMIP7-data-request-api       # if not already present
