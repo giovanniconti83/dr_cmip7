@@ -40,14 +40,16 @@ def main():
             continue
         vs = g.get_variables()
         print(f"\n### {nm}   [{len(vs)} vars]")
+        print(f"    {'out_name':16s} {'cmip6_name':16s} {'freq':6s} {'cell_methods'}")
         rows = []
         for v in vs:
             info = by_uid.get(getattr(v, "uid", None), {})
-            rows.append((info.get("out_name", "?"),
+            c6 = (info.get("cmip6_compound_name", "") or "").split(".")[-1]
+            rows.append((info.get("out_name", "?"), c6,
                          info.get("frequency", "?"),
-                         (info.get("modeling_realm", "") or "").split(" ")[0]))
-        for out, freq, realm in sorted(rows):
-            print(f"    {out:20s} {freq:10s} {realm}")
+                         info.get("cell_methods", "")))
+        for out, c6, freq, cm in sorted(rows):
+            print(f"    {out:16s} {c6:16s} {freq:6s} {cm}")
 
 
 if __name__ == "__main__":
