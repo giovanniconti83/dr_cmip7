@@ -51,7 +51,7 @@ python estimate_volume.py --version v1.2.2.4 2>/dev/null
 | file | contents |
 |------|----------|
 | `cmcc_variables.csv` | **one row per unique CMOR variable** — compound name, `cmip6_name`, `out_name`, frequency, cell (ave/inst), realm, tier, and which groups/opportunities requested it |
-| `cmcc_variables_mapped.csv` | same + `raw_name` and `in_reformatter` (True/False) columns |
+| `cmcc_variables_mapped.csv` | same + `raw_name`, `in_reformatter` (True/False) and `GB_per_year` columns |
 | `cmcc_groups_crosscheck.csv` | **one row per requested group** — matched / aliased / unresolved, + variable count (the audit trail) |
 | `by_realm/<realm>.csv` | per realm: `frequency \| cell \| n \| variables_dr` (DR names) |
 | `raw/by_realm/<realm>.csv` | per realm: `variables_dr \| variables_raw \| variables_unmapped` — the production list |
@@ -148,5 +148,9 @@ for o, n in sorted(c.items()): print(f'{n:5d}  {o}')
   against **v1.2.2.4**; two renamed groups are remapped via `ALIASES`
   (`omip_geometry_physics → omip_scalars_high_priority`,
   `hydro_modelling_PET_daily → WaterResourcesPET_daily`).
-- **Volume grid** (in `estimate_volume.py`): CMCC-ESM2 defaults — atmos 288×192
-  L30, ocean 362×292 L50. Edit `HGRID`/`VLEV` for other configs.
+- **Volume grid** (in `estimate_volume.py`): CMCC-ESM3, calibrated from a real
+  B1850 run — atmos/land SE grid `ncol=48600` L58, ocean/ice NEMO 360×291 L75,
+  float32, raw output ~uncompressed (pass `--compression 0.5` for archived size).
+  Validated: `thetao` mon = 377 MB/yr, `zos` mon = 5 MB/yr match the real files.
+  Edit `HGRID`/`VLEV` for other configs. `inspect_sim.py` re-derives these from
+  any archive.

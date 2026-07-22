@@ -5,11 +5,17 @@ Estimate data volume (GB / model-year) for the CMCC selection.
 Reuses the CMIP7 DR size math (get_variable_size, dimension sizes) but:
   * applies a PER-REALM horizontal grid (the stock estimate_dreq_volume uses a
     single longitude/latitude for every realm, which is wrong for atmos vs ocean),
-  * totals over OUR exact selection (out/cmcc_variables.csv), and
-  * reports request (all selected) vs producible (mapped by cmip_reformatter).
+  * totals over OUR exact selection (out/cmcc_variables.csv),
+  * reports request (all selected) vs producible (mapped by cmip_reformatter), and
+  * writes a GB_per_year column into cmcc_variables_mapped.csv.
 
-Defaults = CMCC-ESM2: CAM5.3 atmos 288x192 L30, NEMO ORCA1 ocean 362x292 L50.
-Edit HGRID / VLEV below (or size.yaml) for other configs.
+Grid = CMCC-ESM3, calibrated from a real B1850 run
+(/work/cmcc/pf28319/CMCC-ESM3/archive/B1850DEVLTbc.26):
+  * atmos/land: CAM/CLM spectral-element grid, ncol = 48600 columns, 58 levels
+  * ocean/ice:  NEMO grid 360 x 291 = 104760 points, 75 depth levels
+  * all fields float32; raw model output is ~uncompressed (measured ratio ~1.0).
+    Set --compression to model the archived (deflated) size.
+Edit HGRID / VLEV below for other configs.
 
 Usage:
     python estimate_volume.py --version v1.2.2.4 \
@@ -21,10 +27,11 @@ import csv
 import os
 from collections import defaultdict
 
-# Per-realm-family horizontal grid (nlon, nlat)
-HGRID = {"atmos": (288, 192), "ocean": (362, 292)}
+# Per-realm-family horizontal grid (nlon, nlat). atmos/land use an unstructured
+# SE grid, represented as (ncol, 1) so longitude*latitude = ncol.
+HGRID = {"atmos": (48600, 1), "ocean": (360, 291)}
 # atmos/ocean vertical levels enter via dimension names alevel/olevel
-VLEV = {"alevel": 30, "alevhalf": 31, "olevel": 50, "olevhalf": 51}
+VLEV = {"alevel": 58, "alevhalf": 59, "olevel": 75, "olevhalf": 75}
 REALM_FAMILY = {
     "atmos": "atmos", "aerosol": "atmos", "atmosChem": "atmos",
     "land": "atmos", "landIce": "atmos",
@@ -66,11 +73,11 @@ def get_variable_size(var_info, dreq_dim_sizes, time_dims, config):
     return num * config["bytes_per_float"] * config["scale_file_size"]
 
 
-def base_config():
-    dims = {"gridlatitude": 192, "latitude": 192, "longitude": 288,
-            "rho": 50, "sdepth": 10, "soilpools": 5, "spectband": 10}
+def base_config(compression=1.0):
+    dims = {"gridlatitude": 291, "latitude": 291, "longitude": 360,
+            "rho": 75, "sdepth": 20, "soilpools": 5, "spectband": 10}
     dims.update(VLEV)
-    return {"dimensions": dims, "bytes_per_float": 4, "scale_file_size": 1}
+    return {"dimensions": dims, "bytes_per_float": 4, "scale_file_size": compression}
 
 
 def realm_config(base, realm):
@@ -89,6 +96,9 @@ def main():
     ap.add_argument("--vars", default=os.path.join(here, "out", "cmcc_variables.csv"))
     ap.add_argument("--mapped", default=os.path.join(here, "out", "raw", "mapping_detail.csv"))
     ap.add_argument("--outdir", default=os.path.join(here, "out"))
+    ap.add_argument("--compression", type=float, default=1.0,
+                    help="on-disk/raw ratio (1.0 = uncompressed, as the raw run; "
+                         "use e.g. 0.5 to model deflated archive size)")
     args = ap.parse_args()
 
     import data_request_api.content.dreq_content as dc
@@ -127,12 +137,13 @@ def main():
     meta = dq.get_variables_metadata(base, args.version, compound_names=sel_names)
     meta.pop("Header", None)
 
-    cfg0 = base_config()
+    cfg0 = base_config(args.compression)
     # aggregate bytes/year
     per_realm = defaultdict(lambda: [0.0, 0.0])       # realm -> [request, producible]
     per_freq = defaultdict(lambda: [0.0, 0.0])
     total = [0.0, 0.0]
     detail = []
+    gb_by_name = {}                                   # compound_name -> GB/year
     for name in sel_names:
         info = meta.get(name)
         if info is None:
@@ -140,6 +151,7 @@ def main():
         realm = (info.get("modeling_realm", "") or "atmos").split(" ")[0]
         freq = info.get("frequency", "")
         size = get_variable_size(info, dreq_dim_sizes, time_dims, realm_config(cfg0, realm))
+        gb_by_name[name] = size / GB
         prod = name in mapped_names
         per_realm[realm][0] += size
         per_freq[freq][0] += size
@@ -153,7 +165,7 @@ def main():
     def gb(x):
         return f"{x/GB:8.2f}"
 
-    print("\n=== GB / model-year ===              request   producible")
+    print(f"\n=== GB / model-year (compression={args.compression}) ===   request   producible")
     print(f"{'TOTAL':22s}          {gb(total[0])}   {gb(total[1])}")
     print("\n--- by realm ---")
     for r in sorted(per_realm, key=lambda k: -per_realm[k][0]):
@@ -161,8 +173,8 @@ def main():
     print("\n--- by frequency ---")
     for fr in sorted(per_freq, key=lambda k: -per_freq[k][0]):
         print(f"{fr:22s}          {gb(per_freq[fr][0])}   {gb(per_freq[fr][1])}")
-    print("\n(ref: CMIP6 was ~100 GB / model-year. Provisional estimate - "
-          "per-realm grid, uncompressed unless scale_file_size<1.)")
+    print("\n(ref: CMIP6 ~100 GB/model-year. Provisional - CMCC-ESM3 grid; "
+          "raw model output ~uncompressed, pass --compression for archived size.)")
 
     out = os.path.join(args.outdir, "volume_by_variable.csv")
     with open(out, "w", newline="") as f:
@@ -171,6 +183,22 @@ def main():
         for name, realm, freq, gbyr, prod in sorted(detail, key=lambda x: -x[3]):
             w.writerow([name, realm, freq, f"{gbyr:.4f}", prod])
     print(f"\n[write] {out} (per-variable, largest first)")
+
+    # merge a GB_per_year column into cmcc_variables_mapped.csv (colleague's ask)
+    mapped_csv = os.path.join(args.outdir, "cmcc_variables_mapped.csv")
+    if os.path.exists(mapped_csv):
+        with open(mapped_csv, newline="") as f:
+            mrows = list(csv.DictReader(f))
+        fields = list(mrows[0].keys())
+        if "GB_per_year" not in fields:
+            fields.append("GB_per_year")
+        for r in mrows:
+            r["GB_per_year"] = f"{gb_by_name.get(r['compound_name'], 0.0):.4f}"
+        with open(mapped_csv, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerows(mrows)
+        print(f"[write] {mapped_csv}  (added GB_per_year column)")
 
 
 if __name__ == "__main__":
