@@ -55,17 +55,21 @@ def load_lookups(lookup_dir):
     return per_fam, combined
 
 
-def resolve(out_name, realm, per_fam, combined):
-    """Return (model, fam_used, reprocess) or (None, None, None) if unmapped."""
+def resolve(keys, realm, per_fam, combined):
+    """keys = (cmip6_name, out_name) tried in order.
+    Return (model, fam_used, reprocess) or (None, None, None) if unmapped."""
     fam = REALM_TO_LOOKUP.get(realm)
-    if fam and out_name in per_fam[fam]:
-        r = per_fam[fam][out_name]
-        return r["model"], fam, r["reprocess"]
-    # fallback: any lookup that has this out_name
-    if out_name in combined:
-        fam2, model = combined[out_name][0]
-        r = per_fam[fam2][out_name]
-        return r["model"], fam2 + "*", r["reprocess"]   # * = realm mismatch
+    # Try the CMIP6 name first, then the CMIP7 out_name, in the realm's lookup...
+    for key in keys:
+        if key and fam and key in per_fam[fam]:
+            r = per_fam[fam][key]
+            return r["model"], fam, r["reprocess"]
+    # ...then any lookup (realm mismatch, flagged with *)
+    for key in keys:
+        if key and key in combined:
+            fam2, model = combined[key][0]
+            r = per_fam[fam2][key]
+            return r["model"], fam2 + "*", r["reprocess"]
     return None, None, None
 
 
@@ -92,44 +96,62 @@ def main():
     os.makedirs(realm_dir, exist_ok=True)
 
     detail, unmapped = [], []
-    by_realm = defaultdict(lambda: defaultdict(set))   # realm -> (freq,cell) -> {raw}
+    # realm -> (freq,cell) -> {"dr":set, "raw":set, "unmapped":set}
+    by_realm = defaultdict(lambda: defaultdict(lambda: {"dr": set(), "raw": set(), "unmapped": set()}))
     per_realm_stat = defaultdict(lambda: [0, 0])       # realm -> [mapped, unmapped]
+    enriched = []                                      # cmcc_variables + raw columns
 
     for r in rows:
-        out, realm = r["out_name"], r["realm"]
-        freq, cell = r["frequency"], r["cell"]
-        model, fam_used, reprocess = resolve(out, realm, per_fam, combined)
+        out, realm = r.get("out_name", ""), r.get("realm", "")
+        dr_name = r.get("cmip6_name") or out          # display / join key
+        freq, cell = r.get("frequency", ""), r.get("cell", "")
+        model, fam_used, reprocess = resolve((r.get("cmip6_name"), out), realm, per_fam, combined)
+        bucket = by_realm[realm][(freq, cell)]
+        bucket["dr"].add(dr_name)
+        row_out = dict(r)
         if model is None:
             per_realm_stat[realm][1] += 1
-            unmapped.append({"out_name": out, "realm": realm, "frequency": freq,
-                             "cell": cell, "cmip6_table": r.get("cmip6_table", ""),
+            bucket["unmapped"].add(dr_name)
+            row_out["raw_name"], row_out["in_reformatter"] = "", "False"
+            unmapped.append({"cmip6_name": dr_name, "out_name": out, "realm": realm,
+                             "frequency": freq, "cell": cell,
+                             "cmip6_table": r.get("cmip6_table", ""),
                              "long_name": r.get("long_name", ""),
                              "groups": r.get("groups", ""),
                              "opportunities": r.get("opportunities", "")})
-            continue
-        per_realm_stat[realm][0] += 1
-        by_realm[realm][(freq, cell)].add(model)
-        detail.append({"out_name": out, "model": model, "realm": realm,
-                       "lookup": fam_used, "reprocess": reprocess,
-                       "frequency": freq, "cell": cell,
-                       "compound_name": r.get("compound_name", "")})
+        else:
+            per_realm_stat[realm][0] += 1
+            bucket["raw"].add(model)
+            row_out["raw_name"], row_out["in_reformatter"] = model, "True"
+            detail.append({"cmip6_name": dr_name, "out_name": out, "model": model,
+                           "realm": realm, "lookup": fam_used, "reprocess": reprocess,
+                           "frequency": freq, "cell": cell,
+                           "compound_name": r.get("compound_name", "")})
+        enriched.append(row_out)
 
-    # per-realm raw tables
+    # per-realm combined tables: variables_dr | variables_raw | variables_unmapped
     for realm, freqmap in sorted(by_realm.items()):
         p = os.path.join(realm_dir, f"{realm or 'unknown'}.csv")
         with open(p, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["frequency", "cell", "n", "variables"])
-            for (freq, cell), names in sorted(freqmap.items()):
-                nm = sorted(names)
-                w.writerow([freq, cell, len(nm), ", ".join(nm)])
+            w.writerow(["frequency", "cell", "n_dr", "variables_dr",
+                        "variables_raw", "variables_unmapped"])
+            for (freq, cell), b in sorted(freqmap.items()):
+                dr = sorted(x for x in b["dr"] if x)
+                w.writerow([freq, cell, len(dr), ", ".join(dr),
+                            ", ".join(sorted(b["raw"])),
+                            ", ".join(sorted(b["unmapped"]))])
 
     _write(os.path.join(raw_dir, "mapping_detail.csv"), detail,
-           ["out_name", "model", "realm", "lookup", "reprocess",
+           ["cmip6_name", "out_name", "model", "realm", "lookup", "reprocess",
             "frequency", "cell", "compound_name"])
     _write(os.path.join(raw_dir, "unmapped.csv"), unmapped,
-           ["out_name", "realm", "frequency", "cell", "cmip6_table",
+           ["cmip6_name", "out_name", "realm", "frequency", "cell", "cmip6_table",
             "long_name", "groups", "opportunities"])
+    # enriched per-variable master (cmcc_variables + raw_name + in_reformatter)
+    if enriched:
+        _write(os.path.join(args.outdir, "cmcc_variables_mapped.csv"), enriched,
+               list(rows[0].keys()) + ["raw_name", "in_reformatter"])
 
     tot_m = sum(s[0] for s in per_realm_stat.values())
     tot_u = sum(s[1] for s in per_realm_stat.values())
@@ -137,7 +159,8 @@ def main():
     for realm in sorted(per_realm_stat):
         m, u = per_realm_stat[realm]
         print(f"           {realm:12s} mapped {m:4d}   unmapped {u:4d}")
-    print(f"[write]  {realm_dir}/  (raw per-realm)")
+    print(f"[write]  {realm_dir}/  (per-realm: variables_dr | variables_raw | variables_unmapped)")
+    print(f"[write]  {os.path.join(args.outdir, 'cmcc_variables_mapped.csv')}")
     print(f"[write]  {os.path.join(raw_dir, 'mapping_detail.csv')}")
     print(f"[write]  {os.path.join(raw_dir, 'unmapped.csv')}  <- production gap, review this")
 

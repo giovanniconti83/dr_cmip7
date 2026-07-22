@@ -50,13 +50,20 @@ python estimate_volume.py --version v1.2.2.4 2>/dev/null
 
 | file | contents |
 |------|----------|
-| `cmcc_variables.csv` | **one row per unique CMOR variable** — compound name, `out_name`, frequency, cell (ave/inst), realm, tier, and which groups/opportunities requested it |
+| `cmcc_variables.csv` | **one row per unique CMOR variable** — compound name, `cmip6_name`, `out_name`, frequency, cell (ave/inst), realm, tier, and which groups/opportunities requested it |
+| `cmcc_variables_mapped.csv` | same + `raw_name` and `in_reformatter` (True/False) columns |
 | `cmcc_groups_crosscheck.csv` | **one row per requested group** — matched / aliased / unresolved, + variable count (the audit trail) |
-| `by_realm/<realm>.csv` | per realm: `frequency \| cell \| n \| variables` (CMOR names) |
-| `raw/by_realm/<realm>.csv` | same, in **raw model names** (e.g. `TREFHT, PRECT`) — the production list |
-| `raw/mapping_detail.csv` | every CMOR var → raw name, which lookup, `reprocess` flag |
+| `by_realm/<realm>.csv` | per realm: `frequency \| cell \| n \| variables_dr` (DR names) |
+| `raw/by_realm/<realm>.csv` | per realm: `variables_dr \| variables_raw \| variables_unmapped` — the production list |
+| `raw/mapping_detail.csv` | every DR var → raw name, which lookup, `reprocess` flag |
 | `raw/unmapped.csv` | selected vars with **no** raw-model mapping = production gap to triage |
 | `volume_by_variable.csv` | per-variable GB/model-year, largest first |
+
+> **CMIP6 vs CMIP7 names.** CMIP7 uses *branded* variables: the daily max of
+> `tas` has `out_name=tas` (+ `cell=max`), not `tasmax`. We therefore key both the
+> display and the reformatter join on `cmip6_name` (`tasmax`, `mrsos`, …) — the
+> name the reformatter lookups use — so no branded variable is hidden under or
+> mis-mapped to its root.
 
 ## Do we have ALL the CMCC-requested variables?
 

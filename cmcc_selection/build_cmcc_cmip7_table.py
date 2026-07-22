@@ -223,9 +223,15 @@ def build(selection, meta_by_uid, groups):
                     name = meta["_unique_name"]
                     rec = var_rows.get(name)
                     if rec is None:
+                        c6c = meta.get("cmip6_compound_name", "") or ""
                         rec = {
                             "compound_name": name,
                             "out_name": meta.get("out_name", ""),
+                            # CMIP6 short name (part after ".") - the identifier that
+                            # disambiguates branded vars (tas tmax -> tasmax) and is the
+                            # key the cmip_reformatter lookups are built on.
+                            "cmip6_name": c6c.split(".")[-1] if c6c else "",
+                            "cmip6_compound_name": c6c,
                             "frequency": meta.get("frequency", ""),
                             "realm": (meta.get("modeling_realm", "") or "").split(" ")[0],
                             "realm_all": meta.get("modeling_realm", ""),
@@ -272,34 +278,39 @@ def write_outputs(crosscheck, var_rows, outdir):
         w.writerows(crosscheck)
 
     var_path = os.path.join(outdir, "cmcc_variables.csv")
-    fields = ["compound_name", "out_name", "frequency", "cell", "realm",
-              "realm_all", "cmip6_table", "long_name", "tiers", "groups",
-              "opportunities", "priorities", "cell_methods"]
+    fields = ["compound_name", "cmip6_name", "out_name", "cmip6_compound_name",
+              "frequency", "cell", "realm", "realm_all", "cmip6_table",
+              "long_name", "tiers", "groups", "opportunities", "priorities",
+              "cell_methods"]
     rows = sorted(var_rows.values(),
-                  key=lambda r: (r["realm"], r["frequency"], r["out_name"]))
+                  key=lambda r: (r["realm"], r["frequency"], r["cmip6_name"] or r["out_name"]))
     with open(var_path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(fields)
         for r in rows:
             w.writerow([
-                r["compound_name"], r["out_name"], r["frequency"], r["cell"],
+                r["compound_name"], r["cmip6_name"], r["out_name"],
+                r["cmip6_compound_name"], r["frequency"], r["cell"],
                 r["realm"], r["realm_all"], r["cmip6_table"], r["long_name"],
                 ";".join(sorted(r["tiers"])), ";".join(sorted(r["groups"])),
                 ";".join(sorted(r["opportunities"])), ";".join(sorted(r["priorities"])),
                 r["cell_methods"],
             ])
 
-    # per-realm: frequency | cell | variables (CMCC production-list shape)
+    # per-realm: frequency | cell | variables_dr (CMCC production-list shape).
+    # Display the CMIP6 name (falls back to out_name) so branded vars are visible
+    # as themselves (tasmax, mrsos), not collapsed into their root (tas, mrsol).
     realm_dir = os.path.join(outdir, "by_realm")
     os.makedirs(realm_dir, exist_ok=True)
-    by_realm = defaultdict(lambda: defaultdict(set))   # realm -> (freq,cell) -> {out_name}
+    by_realm = defaultdict(lambda: defaultdict(set))   # realm -> (freq,cell) -> {dr_name}
     for r in rows:
-        by_realm[r["realm"] or "unknown"][(r["frequency"], r["cell"])].add(r["out_name"])
+        dr_name = r["cmip6_name"] or r["out_name"]
+        by_realm[r["realm"] or "unknown"][(r["frequency"], r["cell"])].add(dr_name)
     for realm, freqmap in sorted(by_realm.items()):
         p = os.path.join(realm_dir, f"{realm or 'unknown'}.csv")
         with open(p, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["frequency", "cell", "n", "variables"])
+            w.writerow(["frequency", "cell", "n", "variables_dr"])
             for (freq, cell), names in sorted(freqmap.items()):
                 nm = sorted(n for n in names if n)
                 w.writerow([freq, cell, len(nm), ", ".join(nm)])
