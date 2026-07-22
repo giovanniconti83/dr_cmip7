@@ -55,9 +55,27 @@ python estimate_volume.py --version v1.2.2.4 2>/dev/null
 | `cmcc_groups_crosscheck.csv` | **one row per requested group** — matched / aliased / unresolved, + variable count (the audit trail) |
 | `by_realm/<realm>.csv` | per realm: `frequency \| cell \| n \| variables_dr` (DR names) |
 | `raw/by_realm/<realm>.csv` | per realm: `variables_dr \| variables_raw \| variables_unmapped` — the production list |
-| `raw/mapping_detail.csv` | every DR var → raw name, which lookup, `reprocess` flag |
-| `raw/unmapped.csv` | selected vars with **no** raw-model mapping = production gap to triage |
+| `raw/mapping_detail.csv` | every directly-mapped DR var → raw name, which lookup, `reprocess` flag |
+| `raw/unmapped.csv` | **triage sheet** for vars with no direct raw mapping — see below |
 | `volume_by_variable.csv` | per-variable GB/model-year, largest first |
+
+### Mapping outcomes (three buckets)
+
+Each selected variable ends up in exactly one bucket:
+
+- **mapped** — its exact CMIP6 name is in the reformatter → produced directly
+  (`tasmax→TREFHTMX`, `chlos→chl` with `reprocess`).
+- **derivable** — the CMIP6 name is absent but its *base field* (the `out_name`)
+  is in the reformatter → produce the base raw var and post-process
+  (`thetao200` from `thetao`; `base_raw` column names it).
+- **true_gap** — neither is known to the reformatter → not producible as-is
+  (`co2s`, hemispheric sea-ice scalars, most `aerosol`/`atmosChem`).
+
+`raw/unmapped.csv` lists the **derivable** and **true_gap** ones, sorted by
+realm then category, with columns `realm | category | cmip6_name | out_name |
+base_raw | frequency | cell | decision | …`. Fill the empty **`decision`**
+column (`drop` / `add` / `derive`) with the colleague to resolve the gaps. The
+run also prints a per-realm `mapped | derivable | true_gap` summary.
 
 > **CMIP6 vs CMIP7 names.** CMIP7 uses *branded* variables: the daily max of
 > `tas` has `out_name=tas` (+ `cell=max`), not `tasmax`. We therefore key both the
@@ -124,7 +142,8 @@ for o, n in sorted(c.items()): print(f'{n:5d}  {o}')
 
 - **Priority** = CMCC per-opportunity (High + Medium): all variables of every
   listed group, no per-variable DR-priority filtering. → 30 opportunities,
-  ~118 group references, **853 unique variables** (497 with raw mappings).
+  ~118 group references, **853 unique variables**, each falling into one of the
+  three mapping buckets above (see the run's per-realm summary / `unmapped.csv`).
 - **DR version**: the CMCC file was authored against ~v1.2.2.2 but we build
   against **v1.2.2.4**; two renamed groups are remapped via `ALIASES`
   (`omip_geometry_physics → omip_scalars_high_priority`,

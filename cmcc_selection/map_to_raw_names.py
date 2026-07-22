@@ -56,10 +56,10 @@ def load_lookups(lookup_dir):
 
 
 def resolve(keys, realm, per_fam, combined):
-    """keys = (cmip6_name, out_name) tried in order.
+    """keys = tuple of lookup keys to try in order (normally just the cmip6 name).
     Return (model, fam_used, reprocess) or (None, None, None) if unmapped."""
     fam = REALM_TO_LOOKUP.get(realm)
-    # Try the CMIP6 name first, then the CMIP7 out_name, in the realm's lookup...
+    # Look in the realm's own lookup family first...
     for key in keys:
         if key and fam and key in per_fam[fam]:
             r = per_fam[fam][key]
@@ -105,7 +105,11 @@ def main():
         out, realm = r.get("out_name", ""), r.get("realm", "")
         dr_name = r.get("cmip6_name") or out          # display / join key
         freq, cell = r.get("frequency", ""), r.get("cell", "")
-        model, fam_used, reprocess = resolve((r.get("cmip6_name"), out), realm, per_fam, combined)
+        # Join on the exact CMIP6 name ONLY (out_name used only if there is no
+        # cmip6 name). No fallback to the root out_name: mapping a derived var
+        # (thetao200) onto its base field (thetao) would re-create the very
+        # branded-variable conflation we fixed - such cases go to triage instead.
+        model, fam_used, reprocess = resolve((dr_name,), realm, per_fam, combined)
         bucket = by_realm[realm][(freq, cell)]
         bucket["dr"].add(dr_name)
         row_out = dict(r)
@@ -113,9 +117,18 @@ def main():
             per_realm_stat[realm][1] += 1
             bucket["unmapped"].add(dr_name)
             row_out["raw_name"], row_out["in_reformatter"] = "", "False"
-            unmapped.append({"cmip6_name": dr_name, "out_name": out, "realm": realm,
-                             "frequency": freq, "cell": cell,
-                             "cmip6_table": r.get("cmip6_table", ""),
+            # Triage: is the base field (CMIP7 out_name) known to the reformatter
+            # even though this derived cmip6_name isn't? If so it's DERIVABLE
+            # (produce the base raw var, then slice/aggregate); else a TRUE GAP.
+            base = combined.get(out)
+            if base:
+                category, base_raw = "derivable", base[0][1]
+            else:
+                category, base_raw = "true_gap", ""
+            unmapped.append({"realm": realm, "category": category,
+                             "cmip6_name": dr_name, "out_name": out,
+                             "base_raw": base_raw, "frequency": freq, "cell": cell,
+                             "decision": "", "cmip6_table": r.get("cmip6_table", ""),
                              "long_name": r.get("long_name", ""),
                              "groups": r.get("groups", ""),
                              "opportunities": r.get("opportunities", "")})
@@ -145,9 +158,12 @@ def main():
     _write(os.path.join(raw_dir, "mapping_detail.csv"), detail,
            ["cmip6_name", "out_name", "model", "realm", "lookup", "reprocess",
             "frequency", "cell", "compound_name"])
+    # unmapped = the triage sheet: realm | category | names | base_raw | decision
+    unmapped.sort(key=lambda x: (x["realm"], x["category"] != "derivable", x["cmip6_name"]))
     _write(os.path.join(raw_dir, "unmapped.csv"), unmapped,
-           ["cmip6_name", "out_name", "realm", "frequency", "cell", "cmip6_table",
-            "long_name", "groups", "opportunities"])
+           ["realm", "category", "cmip6_name", "out_name", "base_raw",
+            "frequency", "cell", "decision", "cmip6_table", "long_name",
+            "groups", "opportunities"])
     # enriched per-variable master (cmcc_variables + raw_name + in_reformatter)
     if enriched:
         _write(os.path.join(args.outdir, "cmcc_variables_mapped.csv"), enriched,
@@ -155,14 +171,21 @@ def main():
 
     tot_m = sum(s[0] for s in per_realm_stat.values())
     tot_u = sum(s[1] for s in per_realm_stat.values())
-    print(f"[map]    {tot_m} mapped to raw names, {tot_u} unmapped")
+    n_deriv = sum(1 for u in unmapped if u["category"] == "derivable")
+    n_gap = sum(1 for u in unmapped if u["category"] == "true_gap")
+    print(f"[map]    {tot_m} mapped, {tot_u} unmapped "
+          f"({n_deriv} derivable-from-base, {n_gap} true gaps)")
+    print(f"{'realm':12s} {'mapped':>7s} {'derivable':>10s} {'true_gap':>9s}")
     for realm in sorted(per_realm_stat):
-        m, u = per_realm_stat[realm]
-        print(f"           {realm:12s} mapped {m:4d}   unmapped {u:4d}")
+        m = per_realm_stat[realm][0]
+        d = sum(1 for u in unmapped if u["realm"] == realm and u["category"] == "derivable")
+        g = sum(1 for u in unmapped if u["realm"] == realm and u["category"] == "true_gap")
+        print(f"{realm:12s} {m:7d} {d:10d} {g:9d}")
     print(f"[write]  {realm_dir}/  (per-realm: variables_dr | variables_raw | variables_unmapped)")
     print(f"[write]  {os.path.join(args.outdir, 'cmcc_variables_mapped.csv')}")
     print(f"[write]  {os.path.join(raw_dir, 'mapping_detail.csv')}")
-    print(f"[write]  {os.path.join(raw_dir, 'unmapped.csv')}  <- production gap, review this")
+    print(f"[write]  {os.path.join(raw_dir, 'unmapped.csv')}  <- TRIAGE SHEET "
+          f"(realm|category|base_raw|decision); fill 'decision' = drop/add/derive")
 
 
 def _write(path, rows, fields):
