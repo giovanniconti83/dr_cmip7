@@ -200,6 +200,48 @@ def main():
             w.writerows(mrows)
         print(f"[write] {mapped_csv}  (added GB_per_year column)")
 
+    # per-(realm,freq,cell) GB totals, to augment the by_realm production tables
+    gb_rfc, gb_rfc_prod = defaultdict(float), defaultdict(float)
+    for r in sel:
+        g = gb_by_name.get(r["compound_name"], 0.0)
+        key = (r["realm"], r["frequency"], r["cell"])
+        gb_rfc[key] += g
+        if r["compound_name"] in mapped_names:
+            gb_rfc_prod[key] += g
+    n1 = augment_by_realm(os.path.join(args.outdir, "by_realm"), gb_rfc)
+    n2 = augment_by_realm(os.path.join(args.outdir, "raw", "by_realm"),
+                          gb_rfc, gb_rfc_prod)
+    if n1 or n2:
+        print(f"[write] added GB_per_year to {n1 + n2} by_realm table(s)")
+
+
+def augment_by_realm(realm_dir, gb_rfc, gb_rfc_prod=None):
+    """Add GB_per_year (and GB_per_year_raw for the raw tables) to each
+    by_realm/<realm>.csv, summed over that (realm, frequency, cell) row."""
+    import glob
+    n = 0
+    for path in sorted(glob.glob(os.path.join(realm_dir, "*.csv"))):
+        realm = os.path.splitext(os.path.basename(path))[0]
+        with open(path, newline="") as f:
+            rows = list(csv.DictReader(f))
+        if not rows:
+            continue
+        fields = [c for c in rows[0].keys() if not c.startswith("GB_per_year")]
+        fields.append("GB_per_year")
+        if gb_rfc_prod is not None:
+            fields.append("GB_per_year_raw")
+        for r in rows:
+            key = (realm, r.get("frequency", ""), r.get("cell", ""))
+            r["GB_per_year"] = f"{gb_rfc.get(key, 0.0):.4f}"
+            if gb_rfc_prod is not None:
+                r["GB_per_year_raw"] = f"{gb_rfc_prod.get(key, 0.0):.4f}"
+        with open(path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+            w.writeheader()
+            w.writerows(rows)
+        n += 1
+    return n
+
 
 if __name__ == "__main__":
     main()
