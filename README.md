@@ -155,20 +155,27 @@ for o, n in sorted(c.items()): print(f'{n:5d}  {o}')
 
 So the per-`(frequency,cell)` row in `raw/by_realm/*.csv` carries
 `GB_per_year_raw` (stored today) and `GB_per_year_true_gap` (extra if added);
-derivable variables are listed but add nothing. The printed TOTAL:
+derivable variables are listed but add nothing. The printed TOTAL (v1.2.2.4,
+853 vars: 436 mapped, 67 derivable, 350 true_gap; uncompressed):
 
 ```
 === GB / model-year (compression=1.0) ===  produced  true_gap    total
-TOTAL                                        212.71     XX.XX    2XX.XX
+TOTAL                                        212.71    224.34    437.05
 ```
 
-- **produced** (~213 GB/yr) — the mapped variables you write today.
-- **true_gap** — extra storage to satisfy the still-missing part of the request.
-- **total = produced + true_gap** — full request, with derivable counted free.
+- **produced ≈ 213 GB/yr** — the mapped variables you write today.
+- **true_gap ≈ 224 GB/yr** — extra storage to satisfy the still-missing request.
+- **total ≈ 437 GB/yr** — full request, with derivable counted free (≈ 34 GB of
+  the old naive 471 was derivable double-counting).
 
-**vs CMIP6 (~100 GB/model-year):** produced ≈ **2×** CMIP6. The driver is
-**high-frequency output** — `3hr`/`6hr`/`day` dominate — and, by realm, the
-75-level NEMO **ocean**. Trimming sub-daily fields is the biggest lever.
+**vs CMIP6 (~100 GB/model-year):** produced ≈ **2×**, full request ≈ **4.4×**.
+
+**Where the cost sits:** the true_gap is almost entirely **ocean sub-daily** —
+`ocean` = 186 of the 224 GB true_gap, and by frequency `3hr` alone = 174 GB. So
+the expensive part of the request is ocean 3-hourly (mostly 3-D) fields; that is
+the single biggest lever if the volume needs trimming. By contrast `atmos` is
+almost fully producible today (124 produced / 2 true_gap), and `6hr`/`1hr` have
+no true_gap at all.
 
 **Compression.** These figures are `--compression 1.0` = **uncompressed** (size
 on disk during the run, before `parallel_nc_compress.sh`). Pass e.g.
