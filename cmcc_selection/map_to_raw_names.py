@@ -189,7 +189,8 @@ def main():
         d = sum(1 for u in unmapped if u["realm"] == realm and u["category"] == "derivable")
         g = sum(1 for u in unmapped if u["realm"] == realm and u["category"] == "true_gap")
         print(f"{realm:12s} {m:7d} {d:10d} {g:9d}")
-    print(f"[write]  {realm_dir}/  (per-realm: variables_dr | variables_raw | variables_unmapped)")
+    print(f"[write]  {realm_dir}/  (per-realm: variables_dr | variables_raw | "
+          "variables_unmapped_derivable | variables_unmapped_true_gap)")
     print(f"[write]  {os.path.join(args.outdir, 'cmcc_variables_mapped.csv')}")
     print(f"[write]  {os.path.join(raw_dir, 'mapping_detail.csv')}")
     print(f"[write]  {os.path.join(raw_dir, 'unmapped.csv')}  <- TRIAGE SHEET "
