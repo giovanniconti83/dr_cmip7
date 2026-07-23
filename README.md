@@ -51,10 +51,10 @@ python estimate_volume.py --version v1.2.2.4 2>/dev/null
 | file | contents |
 |------|----------|
 | `cmcc_variables.csv` | **one row per unique CMOR variable** — compound name, `cmip6_name`, `out_name`, frequency, cell (ave/inst), realm, tier, and which groups/opportunities requested it |
-| `cmcc_variables_mapped.csv` | same + `raw_name`, `in_reformatter` (True/False) and `GB_per_year` columns |
+| `cmcc_variables_mapped.csv` | same + `raw_name`, `in_reformatter`, `map_category` (mapped/derivable/true_gap), `GB_per_year` (physical), `GB_per_year_counted` (0 for derivable) |
 | `cmcc_groups_crosscheck.csv` | **one row per requested group** — matched / aliased / unresolved, + variable count (the audit trail) |
 | `by_realm/<realm>.csv` | per realm: `frequency \| cell \| n \| variables_dr \| GB_per_year` (DR names) |
-| `raw/by_realm/<realm>.csv` | per realm: `variables_dr \| variables_raw \| variables_unmapped \| GB_per_year \| GB_per_year_raw` — the production list |
+| `raw/by_realm/<realm>.csv` | per realm: `variables_dr \| variables_raw \| variables_unmapped_derivable \| variables_unmapped_true_gap \| GB_per_year_raw \| GB_per_year_true_gap` — the production list |
 | `raw/mapping_detail.csv` | every directly-mapped DR var → raw name, which lookup, `reprocess` flag |
 | `raw/unmapped.csv` | **triage sheet** for vars with no direct raw mapping — see below |
 | `volume_by_variable.csv` | per-variable GB/model-year, largest first |
@@ -140,30 +140,35 @@ for o, n in sorted(c.items()): print(f'{n:5d}  {o}')
 
 ## Data volume, and how it compares to CMIP6
 
-`estimate_volume.py` prints a `GB / model-year` table and writes the per-variable
-cost into `cmcc_variables_mapped.csv` (`GB_per_year`) and the per-`(frequency,cell)`
-cost into every `by_realm/*.csv` (`GB_per_year`, plus `GB_per_year_raw` = the
-producible part in `raw/by_realm/`). "Per model-year" = GB written for **each
-simulated year** (a 100-year run ≈ 100×).
+`estimate_volume.py` prints a `GB / model-year` table and writes the cost into
+`cmcc_variables_mapped.csv` (`GB_per_year`, `GB_per_year_counted`) and into every
+`by_realm/*.csv`. "Per model-year" = GB written for **each simulated year** (a
+100-year run ≈ 100×).
 
-The TOTAL line has **two numbers**:
+**Three categories, and how they count toward storage:**
+
+- **mapped** — produced directly → counts its full size (`GB_per_year_raw`).
+- **derivable** — a slice/aggregate of an already-stored field (e.g. `thetao200`
+  from `thetao`) → **counts 0 GB**, because you don't store it separately.
+- **true_gap** — not produced at all → counts only as a *potential* cost if you
+  add it (`GB_per_year_true_gap`).
+
+So the per-`(frequency,cell)` row in `raw/by_realm/*.csv` carries
+`GB_per_year_raw` (stored today) and `GB_per_year_true_gap` (extra if added);
+derivable variables are listed but add nothing. The printed TOTAL:
 
 ```
-=== GB / model-year (compression=1.0) ===   request   producible
-TOTAL                             470.59     212.71
+=== GB / model-year (compression=1.0) ===  produced  true_gap    total
+TOTAL                                        212.71     XX.XX    2XX.XX
 ```
 
-- **request** (~471 GB/yr) — output **all 853 requested variables**, whether or
-  not the model can currently produce them (the full CMCC ask).
-- **producible** (~213 GB/yr) — output **only the variables that map to a raw
-  model field today** (the "mapped" bucket). The gap between the two is the
-  unmapped set; it shrinks as you derive/add those (see the triage sheet).
+- **produced** (~213 GB/yr) — the mapped variables you write today.
+- **true_gap** — extra storage to satisfy the still-missing part of the request.
+- **total = produced + true_gap** — full request, with derivable counted free.
 
-**vs CMIP6 (~100 GB/model-year):** the full request is ≈ **4.7×** CMIP6 and the
-producible part ≈ **2×**. The driver is **high-frequency 3-D output** — `3hr`
-alone is ~211 GB/yr of the request, `6hr`+`day` another ~210 — and, by realm,
-the 75-level NEMO **ocean** (222 GB/yr). Trimming sub-daily fields is the biggest
-lever.
+**vs CMIP6 (~100 GB/model-year):** produced ≈ **2×** CMIP6. The driver is
+**high-frequency output** — `3hr`/`6hr`/`day` dominate — and, by realm, the
+75-level NEMO **ocean**. Trimming sub-daily fields is the biggest lever.
 
 **Compression.** These figures are `--compression 1.0` = **uncompressed** (size
 on disk during the run, before `parallel_nc_compress.sh`). Pass e.g.

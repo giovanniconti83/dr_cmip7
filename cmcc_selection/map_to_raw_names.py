@@ -96,8 +96,9 @@ def main():
     os.makedirs(realm_dir, exist_ok=True)
 
     detail, unmapped = [], []
-    # realm -> (freq,cell) -> {"dr":set, "raw":set, "unmapped":set}
-    by_realm = defaultdict(lambda: defaultdict(lambda: {"dr": set(), "raw": set(), "unmapped": set()}))
+    # realm -> (freq,cell) -> sets of dr/raw names + the two unmapped categories
+    by_realm = defaultdict(lambda: defaultdict(
+        lambda: {"dr": set(), "raw": set(), "derivable": set(), "true_gap": set()}))
     per_realm_stat = defaultdict(lambda: [0, 0])       # realm -> [mapped, unmapped]
     enriched = []                                      # cmcc_variables + raw columns
 
@@ -115,16 +116,19 @@ def main():
         row_out = dict(r)
         if model is None:
             per_realm_stat[realm][1] += 1
-            bucket["unmapped"].add(dr_name)
-            row_out["raw_name"], row_out["in_reformatter"] = "", "False"
+            row_out["raw_name"] = ""
+            row_out["in_reformatter"] = "False"
             # Triage: is the base field (CMIP7 out_name) known to the reformatter
             # even though this derived cmip6_name isn't? If so it's DERIVABLE
-            # (produce the base raw var, then slice/aggregate); else a TRUE GAP.
+            # (produce the base raw var, then slice/aggregate - 0 extra storage);
+            # else a TRUE GAP (not produced at all).
             base = combined.get(out)
             if base:
                 category, base_raw = "derivable", base[0][1]
             else:
                 category, base_raw = "true_gap", ""
+            row_out["map_category"] = category
+            bucket[category].add(dr_name)
             unmapped.append({"realm": realm, "category": category,
                              "cmip6_name": dr_name, "out_name": out,
                              "base_raw": base_raw, "frequency": freq, "cell": cell,
@@ -135,25 +139,29 @@ def main():
         else:
             per_realm_stat[realm][0] += 1
             bucket["raw"].add(model)
-            row_out["raw_name"], row_out["in_reformatter"] = model, "True"
+            row_out["raw_name"] = model
+            row_out["in_reformatter"] = "True"
+            row_out["map_category"] = "mapped"
             detail.append({"cmip6_name": dr_name, "out_name": out, "model": model,
                            "realm": realm, "lookup": fam_used, "reprocess": reprocess,
                            "frequency": freq, "cell": cell,
                            "compound_name": r.get("compound_name", "")})
         enriched.append(row_out)
 
-    # per-realm combined tables: variables_dr | variables_raw | variables_unmapped
+    # per-realm combined tables: DR names, raw names, and the two unmapped classes
+    # (derivable = 0 extra storage; true_gap = would need adding to the model)
     for realm, freqmap in sorted(by_realm.items()):
         p = os.path.join(realm_dir, f"{realm or 'unknown'}.csv")
         with open(p, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["frequency", "cell", "n_dr", "variables_dr",
-                        "variables_raw", "variables_unmapped"])
+            w.writerow(["frequency", "cell", "n_dr", "variables_dr", "variables_raw",
+                        "variables_unmapped_derivable", "variables_unmapped_true_gap"])
             for (freq, cell), b in sorted(freqmap.items()):
                 dr = sorted(x for x in b["dr"] if x)
                 w.writerow([freq, cell, len(dr), ", ".join(dr),
                             ", ".join(sorted(b["raw"])),
-                            ", ".join(sorted(b["unmapped"]))])
+                            ", ".join(sorted(b["derivable"])),
+                            ", ".join(sorted(b["true_gap"]))])
 
     _write(os.path.join(raw_dir, "mapping_detail.csv"), detail,
            ["cmip6_name", "out_name", "model", "realm", "lookup", "reprocess",
@@ -164,10 +172,10 @@ def main():
            ["realm", "category", "cmip6_name", "out_name", "base_raw",
             "frequency", "cell", "decision", "cmip6_table", "long_name",
             "groups", "opportunities"])
-    # enriched per-variable master (cmcc_variables + raw_name + in_reformatter)
+    # enriched per-variable master (cmcc_variables + raw_name + in_reformatter + category)
     if enriched:
         _write(os.path.join(args.outdir, "cmcc_variables_mapped.csv"), enriched,
-               list(rows[0].keys()) + ["raw_name", "in_reformatter"])
+               list(rows[0].keys()) + ["raw_name", "in_reformatter", "map_category"])
 
     tot_m = sum(s[0] for s in per_realm_stat.values())
     tot_u = sum(s[1] for s in per_realm_stat.values())

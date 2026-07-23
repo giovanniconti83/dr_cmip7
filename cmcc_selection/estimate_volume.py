@@ -108,11 +108,25 @@ def main():
     with open(args.vars, newline="") as f:
         sel = list(csv.DictReader(f))
     sel_names = [r["compound_name"] for r in sel]
-    mapped_names = set()
-    if os.path.exists(args.mapped):
+
+    # mapping category per variable (mapped / derivable / true_gap) from the map step.
+    # derivable = 0 extra storage (a slice of an already-stored field), so it does
+    # NOT count toward volume; only mapped (produced) + true_gap (must be added) do.
+    category = {}
+    mapped_csv = os.path.join(args.outdir, "cmcc_variables_mapped.csv")
+    if os.path.exists(mapped_csv):
+        with open(mapped_csv, newline="") as f:
+            for r in csv.DictReader(f):
+                category[r["compound_name"]] = r.get("map_category", "")
+    elif os.path.exists(args.mapped):    # fallback: only know mapped vs not
         with open(args.mapped, newline="") as f:
-            mapped_names = {r["compound_name"] for r in csv.DictReader(f) if r.get("compound_name")}
-    print(f"[vars] {len(sel_names)} selected, {len(mapped_names)} producible (mapped)")
+            mp = {r["compound_name"] for r in csv.DictReader(f) if r.get("compound_name")}
+        for n in sel_names:
+            category[n] = "mapped" if n in mp else "true_gap"
+    nmap = sum(1 for c in category.values() if c == "mapped")
+    nder = sum(1 for c in category.values() if c == "derivable")
+    ngap = sum(1 for c in category.values() if c == "true_gap")
+    print(f"[vars] {len(sel_names)} selected: {nmap} mapped, {nder} derivable, {ngap} true_gap")
 
     # DR size machinery
     dc.retrieve(args.version)
@@ -138,12 +152,12 @@ def main():
     meta.pop("Header", None)
 
     cfg0 = base_config(args.compression)
-    # aggregate bytes/year
-    per_realm = defaultdict(lambda: [0.0, 0.0])       # realm -> [request, producible]
+    # aggregate bytes/year, split by category. derivable -> 0 (free).
+    per_realm = defaultdict(lambda: [0.0, 0.0])       # realm -> [mapped, true_gap]
     per_freq = defaultdict(lambda: [0.0, 0.0])
     total = [0.0, 0.0]
     detail = []
-    gb_by_name = {}                                   # compound_name -> GB/year
+    gb_by_name = {}                                   # compound_name -> physical GB/year
     for name in sel_names:
         info = meta.get(name)
         if info is None:
@@ -152,72 +166,84 @@ def main():
         freq = info.get("frequency", "")
         size = get_variable_size(info, dreq_dim_sizes, time_dims, realm_config(cfg0, realm))
         gb_by_name[name] = size / GB
-        prod = name in mapped_names
-        per_realm[realm][0] += size
-        per_freq[freq][0] += size
-        total[0] += size
-        if prod:
-            per_realm[realm][1] += size
-            per_freq[freq][1] += size
-            total[1] += size
-        detail.append((name, realm, freq, size / GB, prod))
+        cat = category.get(name, "true_gap")
+        col = 0 if cat == "mapped" else (1 if cat == "true_gap" else None)  # derivable -> None (0)
+        if col is not None:
+            per_realm[realm][col] += size
+            per_freq[freq][col] += size
+            total[col] += size
+        detail.append((name, realm, freq, size / GB, cat))
 
     def gb(x):
         return f"{x/GB:8.2f}"
 
-    print(f"\n=== GB / model-year (compression={args.compression}) ===   request   producible")
-    print(f"{'TOTAL':22s}          {gb(total[0])}   {gb(total[1])}")
-    print("\n--- by realm ---")
-    for r in sorted(per_realm, key=lambda k: -per_realm[k][0]):
-        print(f"{r:22s}          {gb(per_realm[r][0])}   {gb(per_realm[r][1])}")
-    print("\n--- by frequency ---")
-    for fr in sorted(per_freq, key=lambda k: -per_freq[k][0]):
-        print(f"{fr:22s}          {gb(per_freq[fr][0])}   {gb(per_freq[fr][1])}")
-    print("\n(ref: CMIP6 ~100 GB/model-year. Provisional - CMCC-ESM3 grid; "
-          "raw model output ~uncompressed, pass --compression for archived size.)")
+    print(f"\n=== GB / model-year (compression={args.compression}) ===  "
+          "produced  true_gap    total")
+    print(f"  (derivable variables add 0 - they are slices of stored fields)")
+    print(f"{'TOTAL':16s}          {gb(total[0])}  {gb(total[1])}  {gb(total[0]+total[1])}")
+    print("\n--- by realm ---            produced  true_gap    total")
+    for r in sorted(per_realm, key=lambda k: -(per_realm[k][0] + per_realm[k][1])):
+        m, g_ = per_realm[r]
+        print(f"{r:16s}          {gb(m)}  {gb(g_)}  {gb(m + g_)}")
+    print("\n--- by frequency ---        produced  true_gap    total")
+    for fr in sorted(per_freq, key=lambda k: -(per_freq[k][0] + per_freq[k][1])):
+        m, g_ = per_freq[fr]
+        print(f"{fr:16s}          {gb(m)}  {gb(g_)}  {gb(m + g_)}")
+    print("\n(ref: CMIP6 ~100 GB/model-year. produced = stored today (mapped); "
+          "true_gap = extra if added; total = produced+true_gap.\n"
+          " CMCC-ESM3 grid; raw output ~uncompressed, pass --compression for archived size.)")
 
     out = os.path.join(args.outdir, "volume_by_variable.csv")
     with open(out, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["compound_name", "realm", "frequency", "GB_per_year", "producible"])
-        for name, realm, freq, gbyr, prod in sorted(detail, key=lambda x: -x[3]):
-            w.writerow([name, realm, freq, f"{gbyr:.4f}", prod])
+        w.writerow(["compound_name", "realm", "frequency", "map_category",
+                    "GB_per_year", "GB_per_year_counted"])
+        for name, realm, freq, gbyr, cat in sorted(detail, key=lambda x: -x[3]):
+            counted = 0.0 if cat == "derivable" else gbyr   # derivable adds nothing
+            w.writerow([name, realm, freq, cat, f"{gbyr:.4f}", f"{counted:.4f}"])
     print(f"\n[write] {out} (per-variable, largest first)")
 
-    # merge a GB_per_year column into cmcc_variables_mapped.csv (colleague's ask)
+    # merge per-variable columns into cmcc_variables_mapped.csv (colleague's ask):
+    # GB_per_year = physical size; GB_per_year_counted = 0 for derivable.
     mapped_csv = os.path.join(args.outdir, "cmcc_variables_mapped.csv")
     if os.path.exists(mapped_csv):
         with open(mapped_csv, newline="") as f:
             mrows = list(csv.DictReader(f))
-        fields = list(mrows[0].keys())
-        if "GB_per_year" not in fields:
-            fields.append("GB_per_year")
+        fields = [c for c in mrows[0].keys() if not c.startswith("GB_per_year")]
+        fields += ["GB_per_year", "GB_per_year_counted"]
         for r in mrows:
-            r["GB_per_year"] = f"{gb_by_name.get(r['compound_name'], 0.0):.4f}"
+            phys = gb_by_name.get(r["compound_name"], 0.0)
+            counted = 0.0 if r.get("map_category") == "derivable" else phys
+            r["GB_per_year"] = f"{phys:.4f}"
+            r["GB_per_year_counted"] = f"{counted:.4f}"
         with open(mapped_csv, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fields)
+            w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             w.writeheader()
             w.writerows(mrows)
-        print(f"[write] {mapped_csv}  (added GB_per_year column)")
+        print(f"[write] {mapped_csv}  (added GB_per_year, GB_per_year_counted)")
 
-    # per-(realm,freq,cell) GB totals, to augment the by_realm production tables
-    gb_rfc, gb_rfc_prod = defaultdict(float), defaultdict(float)
+    # per-(realm,freq,cell) GB totals split by category (derivable -> 0),
+    # to augment the by_realm tables.
+    gb_mapped, gb_gap = defaultdict(float), defaultdict(float)
     for r in sel:
         g = gb_by_name.get(r["compound_name"], 0.0)
         key = (r["realm"], r["frequency"], r["cell"])
-        gb_rfc[key] += g
-        if r["compound_name"] in mapped_names:
-            gb_rfc_prod[key] += g
-    n1 = augment_by_realm(os.path.join(args.outdir, "by_realm"), gb_rfc)
-    n2 = augment_by_realm(os.path.join(args.outdir, "raw", "by_realm"),
-                          gb_rfc, gb_rfc_prod)
+        cat = category.get(r["compound_name"], "true_gap")
+        if cat == "mapped":
+            gb_mapped[key] += g
+        elif cat == "true_gap":
+            gb_gap[key] += g
+        # derivable: adds 0
+    n1 = augment_by_realm(os.path.join(args.outdir, "by_realm"), gb_mapped, gb_gap, raw=False)
+    n2 = augment_by_realm(os.path.join(args.outdir, "raw", "by_realm"), gb_mapped, gb_gap, raw=True)
     if n1 or n2:
-        print(f"[write] added GB_per_year to {n1 + n2} by_realm table(s)")
+        print(f"[write] added GB_per_year columns to {n1 + n2} by_realm table(s)")
 
 
-def augment_by_realm(realm_dir, gb_rfc, gb_rfc_prod=None):
-    """Add GB_per_year (and GB_per_year_raw for the raw tables) to each
-    by_realm/<realm>.csv, summed over that (realm, frequency, cell) row."""
+def augment_by_realm(realm_dir, gb_mapped, gb_gap, raw):
+    """Add GB columns to each by_realm/<realm>.csv (per realm,frequency,cell row).
+    raw=True (raw/by_realm): GB_per_year_raw (mapped/produced) + GB_per_year_true_gap.
+    raw=False (plain by_realm): single GB_per_year = produced + true_gap (derivable=0)."""
     import glob
     n = 0
     for path in sorted(glob.glob(os.path.join(realm_dir, "*.csv"))):
@@ -227,14 +253,16 @@ def augment_by_realm(realm_dir, gb_rfc, gb_rfc_prod=None):
         if not rows:
             continue
         fields = [c for c in rows[0].keys() if not c.startswith("GB_per_year")]
-        fields.append("GB_per_year")
-        if gb_rfc_prod is not None:
-            fields.append("GB_per_year_raw")
+        new = (["GB_per_year_raw", "GB_per_year_true_gap"] if raw else ["GB_per_year"])
+        fields += new
         for r in rows:
             key = (realm, r.get("frequency", ""), r.get("cell", ""))
-            r["GB_per_year"] = f"{gb_rfc.get(key, 0.0):.4f}"
-            if gb_rfc_prod is not None:
-                r["GB_per_year_raw"] = f"{gb_rfc_prod.get(key, 0.0):.4f}"
+            m, g_ = gb_mapped.get(key, 0.0), gb_gap.get(key, 0.0)
+            if raw:
+                r["GB_per_year_raw"] = f"{m:.4f}"
+                r["GB_per_year_true_gap"] = f"{g_:.4f}"
+            else:
+                r["GB_per_year"] = f"{m + g_:.4f}"
         with open(path, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             w.writeheader()
